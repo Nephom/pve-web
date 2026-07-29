@@ -1,0 +1,11 @@
+dist/
+releases/
+publish/
+frontend/node_modules/
+frontend/dist/
+pve-web.yaml
+pve-web-credentials.json
+pve-web-credential.json
+*.crt
+*.key
+*.log

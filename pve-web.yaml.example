@@ -1,0 +1,31 @@
+version: 1
+
+server:
+  listen: 127.0.0.1:8080
+  base_path: /pve-web
+  static_dir: /usr/local/share/pve-web/frontend
+  https:
+    enabled: false
+    cert_file: /usr/local/etc/pve-web/pve-web.crt
+    key_file: /usr/local/etc/pve-web/pve-web.key
+
+refresh:
+  interval_seconds: 5
+  metrics_seconds: 5
+  history_minutes: 5
+
+logging:
+  enabled: true
+  file: /var/log/pve-web/pve-web.log
+
+targets:
+  - id: prod-cluster
+    name: Production Cluster
+    type: cluster
+    enabled: true
+    verify_tls: false
+    detect_ha: true
+    detect_ceph: true
+    endpoints:
+      - https://pve01.example.local:8006
+      - https://pve02.example.local:8006

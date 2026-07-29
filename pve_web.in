@@ -1,0 +1,23 @@
+#!/bin/sh
+
+# PROVIDE: pve_web
+# REQUIRE: NETWORKING
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="pve_web"
+rcvar="pve_web_enable"
+load_rc_config "$name"
+: ${pve_web_enable:="NO"}
+: ${pve_web_config:="/usr/local/etc/pve-web/pve-web.yaml"}
+: ${pve_web_credentials:="/usr/local/etc/pve-web/pve-web-credentials.json"}
+: ${pve_web_command:="/usr/local/libexec/pve-web/pve-web"}
+
+pidfile="/var/run/${name}.pid"
+command="/usr/sbin/daemon"
+command_args="-p ${pidfile} -o /var/log/pve-web/pve-web.log ${pve_web_command} -config ${pve_web_config} -credentials ${pve_web_credentials}"
+procname="${pve_web_command}"
+required_files="${pve_web_config} ${pve_web_credentials}"
+
+run_rc_command "$1"
