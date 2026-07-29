@@ -99,6 +99,7 @@ mkdir -p "$MOUNT"
 rm -rf "$MOUNT/dist" "$MOUNT/releases"
 rm -rf "$MOUNT/frontend/node_modules" "$MOUNT/frontend/dist"
 tar -C "$ROOT" \
+    --exclude ./.git \
     --exclude ./frontend/node_modules \
     --exclude ./frontend/dist \
     --exclude ./dist \
