@@ -98,7 +98,15 @@ type NodeTerminal struct { User string `json:"user"`; Ticket string `json:"ticke
 // GuestVNC is a vncproxy session used to drive a noVNC guest (VM/CT) console.
 // It connects directly to the guest's own VNC server, so it does not share the
 // vncterm 10 second idle-shell timeout either.
-type GuestVNC struct { User string `json:"user"`; Ticket string `json:"ticket"`; Password string `json:"password"`; Cert string `json:"cert"`; Port FlexibleInt `json:"port"`; UPID string `json:"upid"`; authCookie string; csrf string }
+//
+// GuestType/VMID are not part of the Proxmox response; they are recorded by
+// GuestVNCProxy so DialGuestVNC can build the guest-scoped vncwebsocket path
+// (/nodes/{node}/{qemu|lxc}/{vmid}/vncwebsocket). Proxmox validates the VNC
+// ticket against the authpath it was signed with (/vms/{vmid} for guests vs.
+// /nodes/{node} for the Node Shell), so dialing the wrong (node-level)
+// endpoint causes Proxmox to reject the ticket and the websocket handshake
+// fails almost immediately.
+type GuestVNC struct { User string `json:"user"`; Ticket string `json:"ticket"`; Password string `json:"password"`; Cert string `json:"cert"`; Port FlexibleInt `json:"port"`; UPID string `json:"upid"`; GuestType string `json:"-"`; VMID int64 `json:"-"`; authCookie string; csrf string }
 type CephOSDProblem struct { ID int `json:"id"`; Hostname string `json:"hostname,omitempty"`; Status string `json:"status"`; In bool `json:"in"`; Up bool `json:"up"` }
 type CephSummary struct { Health string `json:"health"`; Details []string `json:"details"`; Total int `json:"total"`; Up int `json:"up"`; In int `json:"in"`; Problems []CephOSDProblem `json:"problems"` }
 
@@ -200,35 +208,44 @@ func (c *Client) NodeTermProxy(ctx context.Context, node string) (NodeTerminal, 
 	return v, err
 }
 func (c *Client) DialNodeTermProxy(ctx context.Context, node string, session NodeTerminal) (*websocket.Conn, error) {
-	return c.dialVNCWebsocket(ctx, node, session.Ticket, int(session.Port), session.authCookie, session.csrf)
+	path := fmt.Sprintf("/nodes/%s/vncwebsocket", url.PathEscape(node))
+	return c.dialVNCWebsocket(ctx, path, session.Ticket, int(session.Port), session.authCookie, session.csrf)
 }
 
 // GuestVNCProxy creates a Proxmox vncproxy session for a VM (qemu) or CT (lxc)
 // guest console. This connects directly to the guest's own VNC server (QEMU's
 // built-in VNC server, or the LXC console proxy) and is not affected by the
 // vncterm idle-shell timeout, since vncterm is only used for the Node Shell.
+//
+// width/height are only accepted by Proxmox's LXC vncproxy endpoint; the QEMU
+// vncproxy schema has no such properties and returns HTTP 400 if they are
+// sent, since QEMU's own built-in VNC server determines the display size.
 func (c *Client) GuestVNCProxy(ctx context.Context, node, guestType string, vmid int64, width, height int) (GuestVNC, error) {
 	if c.consoleUser == "" { c.consoleUser = "root@pam" }
 	if c.consolePassword == "" { return GuestVNC{}, fmt.Errorf("console password is not configured") }
 	auth, err := c.loginTicket(ctx)
 	if err != nil { return GuestVNC{}, err }
-	path := fmt.Sprintf("/nodes/%s/%s/%d/vncproxy?websocket=1&width=%d&height=%d", url.PathEscape(node), url.PathEscape(guestType), vmid, width, height)
+	path := fmt.Sprintf("/nodes/%s/%s/%d/vncproxy?websocket=1", url.PathEscape(node), url.PathEscape(guestType), vmid)
+	if guestType == "lxc" {
+		path += fmt.Sprintf("&width=%d&height=%d", width, height)
+	}
 	d, err := c.requestTicket(ctx, http.MethodPost, path, nil, auth)
 	var v GuestVNC
 	if err == nil { err = json.Unmarshal(d, &v) }
-	if err == nil { v.authCookie = auth.Ticket; v.csrf = auth.CSRF }
+	if err == nil { v.authCookie = auth.Ticket; v.csrf = auth.CSRF; v.GuestType = guestType; v.VMID = vmid }
 	return v, err
 }
 func (c *Client) DialGuestVNC(ctx context.Context, node string, session GuestVNC) (*websocket.Conn, error) {
-	return c.dialVNCWebsocket(ctx, node, session.Ticket, int(session.Port), session.authCookie, session.csrf)
+	path := fmt.Sprintf("/nodes/%s/%s/%d/vncwebsocket", url.PathEscape(node), url.PathEscape(session.GuestType), session.VMID)
+	return c.dialVNCWebsocket(ctx, path, session.Ticket, int(session.Port), session.authCookie, session.csrf)
 }
 
-func (c *Client) dialVNCWebsocket(ctx context.Context, node, ticket string, port int, authCookie, csrf string) (*websocket.Conn, error) {
+func (c *Client) dialVNCWebsocket(ctx context.Context, path, ticket string, port int, authCookie, csrf string) (*websocket.Conn, error) {
 	if len(c.target.Endpoints) == 0 { return nil, fmt.Errorf("target has no endpoint") }
 	endpoint := strings.TrimRight(c.target.Endpoints[0], "/")
 	endpoint = strings.Replace(endpoint, "https://", "wss://", 1)
 	endpoint = strings.Replace(endpoint, "http://", "ws://", 1)
-	wsURL := endpoint + "/api2/json/nodes/" + url.PathEscape(node) + "/vncwebsocket?vncticket=" + url.QueryEscape(ticket) + "&port=" + fmt.Sprint(port)
+	wsURL := endpoint + "/api2/json" + path + "?vncticket=" + url.QueryEscape(ticket) + "&port=" + fmt.Sprint(port)
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: !c.target.VerifyTLS}
 	dialer := websocket.Dialer{NetDialContext: tr.DialContext, TLSClientConfig: tr.TLSClientConfig}
