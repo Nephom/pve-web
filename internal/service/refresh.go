@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/local/pve-web/internal/cache"
@@ -17,10 +19,13 @@ import (
 type Refresher struct {
 	runtime *runtime.State
 	store   *cache.Store
+
+	mu        sync.Mutex
+	lastError map[string]string
 }
 
 func NewRefresher(runtimeState *runtime.State, store *cache.Store) *Refresher {
-	return &Refresher{runtime: runtimeState, store: store}
+	return &Refresher{runtime: runtimeState, store: store, lastError: map[string]string{}}
 }
 func (r *Refresher) Run(ctx context.Context) {
 	r.Refresh(ctx)
@@ -57,13 +62,13 @@ func (r *Refresher) one(ctx context.Context, t config.Target, clients map[string
 	if c == nil {
 		v.Error = "credential is not configured"
 		v.ErrorKind = "configuration"
-		r.store.Put(v)
+		r.finish(t.ID, v)
 		return
 	}
 	nodes, err := c.Nodes(ctx)
 	if err != nil {
 		v.Error, v.ErrorKind = message(err)
-		r.store.Put(v)
+		r.finish(t.ID, v)
 		return
 	}
 	if version, versionErr := c.Version(ctx); versionErr == nil {
@@ -109,7 +114,7 @@ func (r *Refresher) one(ctx context.Context, t config.Target, clients map[string
 		}
 	}
 	v.LastRefresh = time.Now()
-	r.store.Put(v)
+	r.finish(t.ID, v)
 	for _, n := range nodes {
 		r.store.UpdateSample(t.ID, "node/"+n.Node, cache.Sample{At: time.Now(), CPU: n.CPU, Memory: percent(n.Mem, n.MaxMem)}, refresh.HistoryMinutes*60/refresh.MetricsSeconds)
 	}
@@ -118,6 +123,28 @@ func (r *Refresher) one(ctx context.Context, t config.Target, clients map[string
 		r.store.UpdateSample(t.ID, key, cache.Sample{At: time.Now(), CPU: g.CPU, Memory: percent(g.Mem, g.MaxMem)}, refresh.HistoryMinutes*60/refresh.MetricsSeconds)
 	}
 }
+
+// finish stores the refreshed target state and logs a message whenever the
+// error state changes (starts failing, changes kind, or recovers). Refresh
+// runs every few seconds, so logging on every poll would flood the log; only
+// logging on transitions keeps pve-web.log a useful, low-noise trail of when
+// a target actually started or stopped having problems.
+func (r *Refresher) finish(targetID string, v cache.TargetState) {
+	r.store.Put(v)
+	r.mu.Lock()
+	previous := r.lastError[targetID]
+	r.lastError[targetID] = v.ErrorKind
+	r.mu.Unlock()
+	if v.ErrorKind == previous {
+		return
+	}
+	if v.ErrorKind == "" {
+		log.Printf("target refresh recovered target=%s", targetID)
+		return
+	}
+	log.Printf("target refresh failed target=%s kind=%s error=%s", targetID, v.ErrorKind, v.Error)
+}
+
 func percent(v, max int64) float64 {
 	if max <= 0 {
 		return 0

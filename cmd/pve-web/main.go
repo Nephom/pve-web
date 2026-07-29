@@ -33,6 +33,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	if logFile := setupLogging(cfg); logFile != nil {
+		defer logFile.Close()
+	}
 	if _, statErr := os.Stat(*credentialsPath); os.IsNotExist(statErr) {
 		portable := filepath.Join(filepath.Dir(*credentialsPath), "pve-web-credential.json")
 		if _, portableErr := os.Stat(portable); portableErr == nil {
@@ -120,6 +123,32 @@ func httpVersion() string {
 		return version
 	}
 	return filepath.Base(os.Args[0])
+}
+
+// setupLogging makes the previously-unused config.Logging settings actually
+// do something: when enabled, all log.Printf/log.Fatal output is written to
+// the configured file instead of the process's default stderr. This gives
+// every deployment platform (not just FreeBSD, where the rc.d script already
+// redirects stdout/stderr via `daemon -o`) a working, predictable log file
+// that whoever is diagnosing a problem can read, without needing to also
+// have access to the OS-level service wrapper's output redirection.
+//
+// If the file cannot be opened (bad path, permission issue, missing parent
+// directory), logging falls back to stderr and a warning is printed there;
+// a broken log file must never prevent pve-web from starting.
+func setupLogging(cfg config.Config) *os.File {
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	if !cfg.Logging.Enabled || cfg.Logging.File == "" {
+		return nil
+	}
+	f, err := os.OpenFile(cfg.Logging.File, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0640)
+	if err != nil {
+		log.Printf("logging: unable to open log file %q, continuing with the default output: %v", cfg.Logging.File, err)
+		return nil
+	}
+	log.SetOutput(f)
+	log.Printf("logging: writing to %s", cfg.Logging.File)
+	return f
 }
 
 var _ = fmt.Sprintf

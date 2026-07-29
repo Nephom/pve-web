@@ -232,3 +232,11 @@ HTTP 預設保持可用，HTTPS 預設關閉，不會因尚未產生 certificate
 ## Guest power safety
 
 操作確認會列出 target、node、guest type、VMID、guest name、目前狀態與即將執行的 action。running guest 可 shutdown/stop/reboot；stopped guest 可 start；其他狀態的 action 由 backend disable。task 完成後會再次 refresh guest data。
+
+## 技術文件
+
+更深入的技術參考文件放在 [`docs/`](./docs/)：
+
+- [`docs/architecture.md`](./docs/architecture.md)：整體架構、執行期資料流、設定與 credential 分離的方式。
+- [`docs/console-protocols.md`](./docs/console-protocols.md)：Node Shell 與 Guest Console 實際使用的 Proxmox API、底層協定差異，以及開發過程中踩過的坑與根因（idle timeout、API schema 差異、票證驗證端點、noVNC 鍵盤焦點）。
+- [`docs/logging.md`](./docs/logging.md)：log 檔設定、會記錄哪些事件、常見問題怎麼從 log 判斷。

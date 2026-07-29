@@ -143,6 +143,7 @@ func (s *Server) consoleWebsocket(w http.ResponseWriter, r *http.Request, node s
 	session, ok := s.sessions[sessionID]
 	s.mu.RUnlock()
 	if !ok || session.Node != node || time.Now().After(session.Expires) {
+		log.Printf("node console websocket rejected node=%s session_found=%t reason=%s", node, ok, sessionRejectReason(ok, ok && session.Node != node, ok && time.Now().After(session.Expires)))
 		http.Error(w, "console session expired", http.StatusGone)
 		return
 	}
@@ -161,7 +162,7 @@ func (s *Server) consoleWebsocket(w http.ResponseWriter, r *http.Request, node s
 		return
 	}
 	defer remote.Close()
-	relayWebsocket(local, remote)
+	relayWebsocket(fmt.Sprintf("node console node=%s", node), local, remote)
 }
 
 func (s *Server) guestConsole(w http.ResponseWriter, r *http.Request) {
@@ -220,6 +221,7 @@ func (s *Server) guestConsoleWebsocket(w http.ResponseWriter, r *http.Request, n
 	session, ok := s.guestSessions[sessionID]
 	s.mu.RUnlock()
 	if !ok || session.Node != node || time.Now().After(session.Expires) {
+		log.Printf("guest console websocket rejected node=%s type=%s vmid=%s session_found=%t reason=%s", node, guestType, vmid, ok, sessionRejectReason(ok, ok && session.Node != node, ok && time.Now().After(session.Expires)))
 		http.Error(w, "console session expired", http.StatusGone)
 		return
 	}
@@ -238,7 +240,7 @@ func (s *Server) guestConsoleWebsocket(w http.ResponseWriter, r *http.Request, n
 		return
 	}
 	defer remote.Close()
-	relayWebsocket(local, remote)
+	relayWebsocket(fmt.Sprintf("guest console node=%s type=%s vmid=%s", node, guestType, vmid), local, remote)
 }
 
 var consoleUpgrader = websocket.Upgrader{CheckOrigin: func(req *http.Request) bool {
@@ -249,33 +251,59 @@ var consoleUpgrader = websocket.Upgrader{CheckOrigin: func(req *http.Request) bo
 // websocket and the websocket dialed to the Proxmox VE vncwebsocket endpoint.
 // It is protocol-agnostic: both the termproxy (xterm.js) multiplexed byte
 // stream and the raw RFB/VNC byte stream are relayed transparently.
-func relayWebsocket(local, remote *websocket.Conn) {
-	done := make(chan struct{}, 2)
+//
+// It logs when the relay starts and ends, including which side closed the
+// connection first and any read/write error, so a session that drops
+// mid-stream (network blip, Proxmox restarting pvedaemon, a ticket actually
+// expiring, vncterm/termproxy exiting, etc.) leaves a diagnosable trace in
+// the log instead of disappearing silently.
+func relayWebsocket(label string, local, remote *websocket.Conn) {
+	log.Printf("%s relay started", label)
+	done := make(chan string, 2)
 	go func() {
 		for {
 			typ, data, readErr := local.ReadMessage()
 			if readErr != nil {
-				break
+				done <- fmt.Sprintf("browser closed the connection: %v", readErr)
+				return
 			}
 			if writeErr := remote.WriteMessage(typ, data); writeErr != nil {
-				break
+				done <- fmt.Sprintf("failed to forward browser data to proxmox: %v", writeErr)
+				return
 			}
 		}
-		done <- struct{}{}
 	}()
 	go func() {
 		for {
 			typ, data, readErr := remote.ReadMessage()
 			if readErr != nil {
-				break
+				done <- fmt.Sprintf("proxmox closed the connection: %v", readErr)
+				return
 			}
 			if writeErr := local.WriteMessage(typ, data); writeErr != nil {
-				break
+				done <- fmt.Sprintf("failed to forward proxmox data to browser: %v", writeErr)
+				return
 			}
 		}
-		done <- struct{}{}
 	}()
-	<-done
+	reason := <-done
+	log.Printf("%s relay ended: %s", label, reason)
+}
+
+// sessionRejectReason turns the three console-session validity checks into a
+// short, log-friendly reason string without ever logging the session ID,
+// ticket, or password itself.
+func sessionRejectReason(found, nodeMismatch, expired bool) string {
+	switch {
+	case !found:
+		return "unknown_session"
+	case nodeMismatch:
+		return "node_mismatch"
+	case expired:
+		return "expired"
+	default:
+		return "unknown"
+	}
 }
 
 func makeSessionID() string {

@@ -117,11 +117,12 @@ func (m *Manager) update(id, status, msg, guestStatus string) {
 }
 func (m *Manager) finish(id, status, msg string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	j := m.jobs[id]
 	now := time.Now()
 	j.Status = status
 	j.Message = msg
 	j.FinishedAt = &now
 	m.jobs[id] = j
+	m.mu.Unlock()
+	log.Printf("guest power finished id=%s target=%s type=%s vmid=%d action=%s status=%s message=%q", id, j.TargetID, j.Guest.Type, j.Guest.VMID, j.Action, status, msg)
 }
