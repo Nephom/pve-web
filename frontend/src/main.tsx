@@ -1,10 +1,9 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { Suspense, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { Terminal } from '@xterm/xterm'
-import { FitAddon } from '@xterm/addon-fit'
-import '@xterm/xterm/css/xterm.css'
-import { Area, AreaChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import './style.css'
+
+const NodeChart = React.lazy(() => import('./charts').then(m => ({ default: m.NodeChart })))
+const GuestChart = React.lazy(() => import('./charts').then(m => ({ default: m.GuestChart })))
 
 type Guest = { vmid: number; type: string; node: string; name: string; status: string; cpu: number; mem: number; maxmem: number }
 type Node = { node: string; status: string; cpu: number; mem: number; maxmem: number }
@@ -64,58 +63,65 @@ function App() {
   useEffect(() => { loadTargetConfig() }, [])
   useEffect(() => {
     if (!consoleSession || !consoleRef.current) return
-    const container = consoleRef.current
-    container.innerHTML = ''
-    const term = new Terminal({ cursorBlink: true, fontSize: 13, theme: { background: '#050a12', foreground: '#d6e6f5' } })
-    const fit = new FitAddon()
-    term.loadAddon(fit)
-    term.open(container)
-    fit.fit()
-    const url = new URL(consoleSession.websocket_path, window.location.href)
-    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
-    const ws = new WebSocket(url.toString())
-    ws.binaryType = 'arraybuffer'
-    let connected = false
-    let ping: number | undefined
-    let unmounted = false
-    const utf8Length = (value: string) => unescape(encodeURIComponent(value)).length
-    const closeAll = (clean: boolean) => {
-      if (unmounted) return
-      setConsoleSession(null)
-      setNotice(clean ? 'Node Shell disconnected' : 'Node Shell WebSocket disconnected; check the reverse proxy WebSocket settings')
-    }
-    ws.onopen = () => { ws.send(`${consoleSession.user}:${consoleSession.ticket}\n`) }
-    ws.onmessage = event => {
-      const data = new Uint8Array(event.data as ArrayBuffer)
-      if (!connected) {
-        if (data[0] === 79 && data[1] === 75) { // "OK"
-          connected = true
-          term.write(data.slice(2))
-          requestAnimationFrame(() => requestAnimationFrame(() => { fit.fit(); term.focus() }))
-          ping = window.setInterval(() => { if (ws.readyState === WebSocket.OPEN) ws.send('2') }, 30000)
-        } else {
-          ws.close()
-        }
-        return
+    let disposed = false
+    let dispose: (() => void) | null = null
+    Promise.all([import('@xterm/xterm'), import('@xterm/addon-fit'), import('@xterm/xterm/css/xterm.css')]).then(([{ Terminal }, { FitAddon }]) => {
+      if (disposed || !consoleRef.current || !consoleSession) return
+      const container = consoleRef.current
+      container.innerHTML = ''
+      const term = new Terminal({ cursorBlink: true, fontSize: 13, theme: { background: '#050a12', foreground: '#d6e6f5' } })
+      const fit = new FitAddon()
+      term.loadAddon(fit)
+      term.open(container)
+      fit.fit()
+      const url = new URL(consoleSession.websocket_path, window.location.href)
+      url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+      const ws = new WebSocket(url.toString())
+      ws.binaryType = 'arraybuffer'
+      let connected = false
+      let ping: number | undefined
+      let unmounted = false
+      const utf8Length = (value: string) => unescape(encodeURIComponent(value)).length
+      const closeAll = (clean: boolean) => {
+        if (unmounted) return
+        setConsoleSession(null)
+        setNotice(clean ? 'Node Shell disconnected' : 'Node Shell WebSocket disconnected; check the reverse proxy WebSocket settings')
       }
-      term.write(data)
-    }
-    ws.onclose = event => closeAll(event.code === 1000)
-    ws.onerror = () => closeAll(false)
-    const dataListener = term.onData(value => { if (connected && ws.readyState === WebSocket.OPEN) ws.send(`0:${utf8Length(value)}:${value}`) })
-    const resizeListener = term.onResize(size => { if (connected && ws.readyState === WebSocket.OPEN) ws.send(`1:${size.cols}:${size.rows}:`) })
-    const onWindowResize = () => fit.fit()
-    window.addEventListener('resize', onWindowResize)
-    return () => {
-      unmounted = true
-      window.removeEventListener('resize', onWindowResize)
-      if (ping) window.clearInterval(ping)
-      dataListener.dispose()
-      resizeListener.dispose()
-      ws.close()
-      term.dispose()
-    }
+      ws.onopen = () => { ws.send(`${consoleSession.user}:${consoleSession.ticket}\n`) }
+      ws.onmessage = event => {
+        const data = new Uint8Array(event.data as ArrayBuffer)
+        if (!connected) {
+          if (data[0] === 79 && data[1] === 75) { // "OK"
+            connected = true
+            term.write(data.slice(2))
+            requestAnimationFrame(() => requestAnimationFrame(() => { fit.fit(); term.focus() }))
+            ping = window.setInterval(() => { if (ws.readyState === WebSocket.OPEN) ws.send('2') }, 30000)
+          } else {
+            ws.close()
+          }
+          return
+        }
+        term.write(data)
+      }
+      ws.onclose = event => closeAll(event.code === 1000)
+      ws.onerror = () => closeAll(false)
+      const dataListener = term.onData(value => { if (connected && ws.readyState === WebSocket.OPEN) ws.send(`0:${utf8Length(value)}:${value}`) })
+      const resizeListener = term.onResize(size => { if (connected && ws.readyState === WebSocket.OPEN) ws.send(`1:${size.cols}:${size.rows}:`) })
+      const onWindowResize = () => fit.fit()
+      window.addEventListener('resize', onWindowResize)
+      dispose = () => {
+        unmounted = true
+        window.removeEventListener('resize', onWindowResize)
+        if (ping) window.clearInterval(ping)
+        dataListener.dispose()
+        resizeListener.dispose()
+        ws.close()
+        term.dispose()
+      }
+    }).catch(() => { if (!disposed) setNotice('Failed to load the terminal viewer') })
+    return () => { disposed = true; if (dispose) dispose() }
   }, [consoleSession])
+
 
   useEffect(() => {
     if (!guestConsole || !guestConsoleRef.current) return
@@ -193,9 +199,9 @@ function App() {
     <div className="layout"><aside className="sidebar"><div className="side-heading"><span className="eyebrow">INVENTORY</span><h2>Targets</h2></div>{targets.map(t => <button className={t.id === selected ? 'target selected' : 'target'} onClick={() => setSelected(t.id)} key={t.id}><b>{t.name}</b><span>{t.type} / {t.nodes.length} nodes / {t.guests.length} guests</span></button>)}</aside>
       <main>{target ? <><section className="hero"><div><span className="eyebrow">{target.type.toUpperCase()} / TELEMETRY</span><h2>{target.name}</h2><p>{target.last_refresh ? `Last refresh ${new Date(target.last_refresh).toLocaleTimeString()} · Rolling 5 minutes` : 'Waiting for first telemetry refresh'}</p></div><div className="stat"><strong>{target.nodes.length}</strong><span>Nodes</span></div><div className="stat"><strong>{target.guests.length}</strong><span>Guests</span></div><div className="stat"><strong>{sharedStorages.length}</strong><span>Storage pools</span></div></section>
         {target.ceph && <button className="ceph-badge" onClick={() => setCephOpen(true)}><i className={`status-dot ${target.ceph.health === 'HEALTH_OK' ? 'status-online' : 'status-alert'}`} />Ceph {target.ceph.health}</button>}{target.error && <div className="error"><b>{target.error_kind || 'error'}</b><span>{target.error}</span></div>}
-        <section><div className="section-heading"><div><span className="eyebrow">SYSTEM TELEMETRY</span><h2>Nodes</h2></div><span className="section-meta">LIVE · 5 SECOND INTERVAL</span></div><div className="node-grid">{target.nodes.map(n => { const chart = renderChart(target.samples[`node/${n.node}`] || []); return <article className="node-card" key={n.node}><div className="card-head"><div><h3><i className={`status-dot ${statusClass(n.status)}`} />{n.node}</h3><span>{n.status}</span></div><div className="node-actions"><span className="node-updated">{chart.length ? chart[chart.length - 1].time : 'collecting...'}</span><button className="shell-button" onClick={() => openConsole(n.node)}>Shell</button></div></div><div className="metric-row"><span>CPU <strong>{displayPercent(n.cpu)}%</strong></span><span>Memory <strong>{percent(n.mem, n.maxmem)}%</strong></span></div><div className="chart"><ResponsiveContainer width="100%" height={150}><LineChart data={chart}><CartesianGrid strokeDasharray="3 3" stroke="#24354a" /><XAxis dataKey="time" tick={{ fill: '#71839a', fontSize: 10 }} minTickGap={28} /><YAxis domain={[0, 100]} tick={{ fill: '#71839a', fontSize: 10 }} width={30} tickFormatter={v => `${v}%`} /><Tooltip contentStyle={{ background: '#101a2a', border: '1px solid #29415d', borderRadius: 6 }} /><Line type="monotone" dataKey="cpu" stroke={chartColors.cpu} strokeWidth={2} dot={false} /><Line type="monotone" dataKey="memory" stroke={chartColors.memory} strokeWidth={2} dot={false} /></LineChart></ResponsiveContainer></div><div className="legend"><span><i style={{ background: chartColors.cpu }} />CPU</span><span><i style={{ background: chartColors.memory }} />Memory</span><span>5 MIN WINDOW</span></div></article> })}</div></section>
+        <section><div className="section-heading"><div><span className="eyebrow">SYSTEM TELEMETRY</span><h2>Nodes</h2></div><span className="section-meta">LIVE · 5 SECOND INTERVAL</span></div><div className="node-grid">{target.nodes.map(n => { const chart = renderChart(target.samples[`node/${n.node}`] || []); return <article className="node-card" key={n.node}><div className="card-head"><div><h3><i className={`status-dot ${statusClass(n.status)}`} />{n.node}</h3><span>{n.status}</span></div><div className="node-actions"><span className="node-updated">{chart.length ? chart[chart.length - 1].time : 'collecting...'}</span><button className="shell-button" onClick={() => openConsole(n.node)}>Shell</button></div></div><div className="metric-row"><span>CPU <strong>{displayPercent(n.cpu)}%</strong></span><span>Memory <strong>{percent(n.mem, n.maxmem)}%</strong></span></div><div className="chart"><Suspense fallback={<div className="chart-loading" />}><NodeChart data={chart} /></Suspense></div><div className="legend"><span><i style={{ background: chartColors.cpu }} />CPU</span><span><i style={{ background: chartColors.memory }} />Memory</span><span>5 MIN WINDOW</span></div></article> })}</div></section>
         <section className="storage-section"><div className="section-heading"><div><span className="eyebrow">CAPACITY TELEMETRY</span><h2>{target.type === 'cluster' ? 'Shared Storage Pools' : 'Storage Pools'}</h2></div><span className="section-meta">SORTED BY NAME</span></div><div className="storage-grid">{sharedStorages.map(s => { const used = storagePercent(s); return <article className="storage-card" key={s.storage}><div className="card-head"><div><h3>{s.storage}</h3><span>{s.type} · {s.status || (s.active ? 'active' : 'inactive')}</span></div><strong className={used >= 85 ? 'storage-danger' : used >= 70 ? 'storage-warning' : ''}>{used}%</strong></div><div className="capacity"><i className={used >= 85 ? 'danger' : used >= 70 ? 'warning' : ''} style={{ width: `${Math.min(used, 100)}%` }} /></div><div className="storage-numbers"><span>Used <b>{bytes(s.used)}</b></span><span>Available <b>{bytes(s.avail)}</b></span><span>Total <b>{bytes(s.total)}</b></span></div></article>})}</div></section>
-        <section><div className="section-heading"><div><span className="eyebrow">GUEST INVENTORY</span><h2>Guests</h2></div><span className="section-meta">SELECT A VMID FOR POWER CONTROL</span></div><div className="guest-list">{target.guests.map(g => { const chart = renderGuestChart(target.samples[`guest/${g.type}/${g.vmid}`] || []); return <div className="guest-row" role="button" tabIndex={0} key={`${g.type}-${g.vmid}`} onClick={() => setGuestModal({ guest: g })} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') setGuestModal({ guest: g }) }}><div className="guest-content"><span className="guest-id">{g.vmid}</span><span className="guest-type">{g.type.toUpperCase()}</span><span className="guest-name">{g.name || 'Unnamed guest'}</span><div className="guest-cpu"><div className="guest-cpu-label">CPU (%) <strong>{displayPercent(g.cpu)}%</strong></div><div className="guest-chart"><ResponsiveContainer width="100%" height="100%"><AreaChart data={chart}><Area type="monotone" dataKey="cpu" stroke="#55d6ff" fill="#55d6ff" fillOpacity={0.2} strokeWidth={2} dot={{ r: 2, strokeWidth: 0, fill: '#8de8ff' }} activeDot={{ r: 4, stroke: '#dff9ff', strokeWidth: 1, fill: '#55d6ff' }} /></AreaChart></ResponsiveContainer></div></div><span className="guest-node">{g.node}</span><span className="guest-status"><i className={`status-dot ${statusClass(g.status)}`} />{g.status}</span><span className="chevron"><button type="button" className="console-inline-btn" title="Open console" onClick={e => { e.stopPropagation(); openGuestConsole(g) }}>⌘</button>›</span></div></div> })}</div></section>
+        <section><div className="section-heading"><div><span className="eyebrow">GUEST INVENTORY</span><h2>Guests</h2></div><span className="section-meta">SELECT A VMID FOR POWER CONTROL</span></div><div className="guest-list">{target.guests.map(g => { const chart = renderGuestChart(target.samples[`guest/${g.type}/${g.vmid}`] || []); return <div className="guest-row" role="button" tabIndex={0} key={`${g.type}-${g.vmid}`} onClick={() => setGuestModal({ guest: g })} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') setGuestModal({ guest: g }) }}><div className="guest-content"><span className="guest-id">{g.vmid}</span><span className="guest-type">{g.type.toUpperCase()}</span><span className="guest-name">{g.name || 'Unnamed guest'}</span><div className="guest-cpu"><div className="guest-cpu-label">CPU (%) <strong>{displayPercent(g.cpu)}%</strong></div><div className="guest-chart"><Suspense fallback={null}><GuestChart data={chart} /></Suspense></div></div><span className="guest-node">{g.node}</span><span className="guest-status"><i className={`status-dot ${statusClass(g.status)}`} />{g.status}</span><span className="chevron"><button type="button" className="console-inline-btn" title="Open console" onClick={e => { e.stopPropagation(); openGuestConsole(g) }}>⌘</button>›</span></div></div> })}</div></section>
         {job && <div className="task-strip"><span className="eyebrow">TASK</span><strong>{job.status || 'submitted'}</strong><span>{job.id || ''} {job.message || ''}</span></div>}
       </> : <div className="empty-state"><span className="eyebrow">NO TARGET</span><h2>No target configured</h2><p>Configure a Proxmox target to begin monitoring.</p></div>}</main></div>
   </div>
