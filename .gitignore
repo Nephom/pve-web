@@ -9,4 +9,10 @@ pve-web-credential.json
 *.crt
 *.key
 *.log
-TODOlist.md
+
+# Internal-only markdown files: only README.md (this file) and docs/*.md are
+# published to GitHub. All other .md files (AGENTS.md, TODOlist.md, etc.)
+# are internal notes and must stay local only.
+*.md
+!README.md
+!docs/**/*.md
