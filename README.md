@@ -1,6 +1,6 @@
 # pve-web
 
-`pve-web` 是獨立於 `pve-console` TUI 的 Proxmox VE dashboard。Go backend 負責 Proxmox API、shared cache、背景 refresh 與 guest power task；React/Vite frontend 負責瀏覽器畫面。production 不需要常駐 Node.js。
+`pve-web` 是一套專門為 FreeBSD 平台架設的 Proxmox VE dashboard。Go backend 負責 Proxmox API、shared cache、背景 refresh 與 guest power task；React/Vite frontend 負責瀏覽器畫面。production 不需要常駐 Node.js。
 
 ## 目前範圍
 
@@ -83,21 +83,9 @@ Ensure there is no later `proxy_set_header Connection "";` in the matching
 location. The `Upgrade` and `Connection` directives must be inside the active
 `location /pve-web/` block, and Nginx must be reloaded after changing them.
 
-## Credential migration
+## Credential
 
-Windows DPAPI 不能在 FreeBSD/Linux 解密。現有 TUI 提供未公開於 help 的 migration command：
-
-```powershell
-pve-console.exe target export
-```
-
-它會在 `pve-console.exe` 所在目錄產生：
-
-```text
-pve-web-credential.json
-```
-
-檔案包含所有 target 的 endpoints、user、token name 與 token value。這是完整 Proxmox credential，必須透過安全方式搬移，匯入後刪除。
+檔案包含所有 target 的 endpoints、user、token name 與 token value。
 
 Web backend 使用：
 
@@ -146,16 +134,18 @@ dist/webroot/
 `build.sh` 預設也會將完整專案同步到：
 
 ```text
-/mnt/pve-web/
+/path/pve-web/
 ```
 
-所以 Alpine/Nginx 的 `/pve-web/` document root 可以直接指向：
+path 是 Web server 可以讀取的位置，以提供 deploy.sh 安裝與更新。
+
+所以 Nginx 的 `/pve-web/` document root 可以直接指向：
 
 ```text
-/mnt/pve-web/
+/path/pve-web/
 ```
 
-`dist/webroot` 已設定目錄 `755`、一般檔案 `644`、binary `755`，可由 Alpine Web server 直接讀取。不要將 `pve-web.yaml`、`pve-web-credentials.json`、API token 或 private key 放入此 webroot。
+`dist/webroot` 已設定目錄 `755`、一般檔案 `644`、binary `755`，可由 Nginx Web server 直接讀取。不要將 `pve-web.yaml`、`pve-web-credentials.json`、API token 或 private key 放入此 webroot。
 
 ## FreeBSD deploy
 
@@ -165,11 +155,13 @@ dist/webroot/
 sh deploy.sh install
 ```
 
+ps: SOURCE=${PVE_WEB_SOURCE:-http://172.20.1.6/pve-web} <== 請改為你的發布網址
+
 `install` 或 `upgrade` 完成後會檢查設定與 credential。若 credential 已存在，script 會設定 `pve_web_enable=YES`、啟動 FreeBSD service，並輸出本機 health check 與 log 指令；若 credential 尚未存在，script 會列出匯入 credential、確認 target、重新執行 install 的步驟。
 
 Windows export 的 portable 檔名是 `pve-web-credential.json`。將它放到 `/usr/local/etc/pve-web/` 後重新執行 `sh deploy.sh install`，script 會轉成 service 使用的 `/usr/local/etc/pve-web/pve-web-credentials.json`，並設定檔案權限為 `600`。
 
-未指定 URL 時預設使用 `http://172.20.1.6/pve-web`。發布網站需提供：
+發布網站需提供：
 
 ```text
 /pve-web/releases/latest.json
